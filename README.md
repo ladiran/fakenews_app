@@ -59,6 +59,21 @@ Training prints held-out metrics and writes `app/ml/artifacts/model.joblib` plus
 The `--extra` score is the one to trust: it comes from a news source the models never saw.
 If it is far below the in-source score, the models learned the source, not fake news.
 
+### Measured results (first real training run)
+Trained on LIAR train and validation. Threshold chosen on validation data only.
+
+| Test set | Accuracy | Balanced accuracy | ROC AUC |
+|---|---|---|---|
+| LIAR, held-out split (same source) | 62% | 62% | 0.67 |
+| LIAR, official test file | 64% | 64% | 0.68 |
+| ISOT (different source, never trained on) | 52% | 54% | 0.59 |
+
+Reading this honestly: on political claims the models are modestly better than a coin flip, and on
+a different source they are close to useless. The app therefore caps the classifier's influence at
+4 points when its outside-source AUC is below 0.65. Style models are a weak hint, and the fact-check,
+blocklist and corroboration checks matter far more. Datasets are licensed for research use, so
+`data/` is git-ignored. Re-download them rather than committing them.
+
 Notes:
 - The loaders strip source giveaways such as "(Reuters)" and links, which otherwise let a model cheat.
 - `half-true` LIAR rows are dropped; `pants-fire`, `false` and `barely-true` count as fake.

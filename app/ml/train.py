@@ -21,7 +21,7 @@ import sklearn
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.svm import LinearSVC
@@ -52,6 +52,7 @@ def evaluate(y_true, p_fake, threshold: float = 0.5) -> dict:
     out = {"n": int(len(y_true)),
            "fake_share": round(float(np.mean(y_true)), 3),
            "accuracy": round(accuracy_score(y_true, pred), 4),
+           "balanced_accuracy": round(balanced_accuracy_score(y_true, pred), 4),
            "precision_fake": round(precision_score(y_true, pred, zero_division=0), 4),
            "recall_fake": round(recall_score(y_true, pred, zero_division=0), 4),
            "f1_fake": round(f1_score(y_true, pred, zero_division=0), 4)}
@@ -87,7 +88,8 @@ def train(datasets: list[str], extras: list[str], out_dir: Path, seed: int = 42,
     # Pick the decision threshold on validation data only, then report on untouched test data.
     p_va, _ = ensemble_proba(models, X_va)
     thresholds = np.linspace(0.3, 0.7, 41)
-    best_t = float(max(thresholds, key=lambda t: f1_score(y_va, p_va >= t, zero_division=0)))
+    # Balanced accuracy, not F1: F1 on the fake class rewards flagging everything as fake.
+    best_t = float(max(thresholds, key=lambda t: balanced_accuracy_score(y_va, p_va >= t)))
 
     p_te, per_te = ensemble_proba(models, X_te)
     metrics = {"test": {"ensemble": evaluate(y_te, p_te, best_t),
