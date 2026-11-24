@@ -59,20 +59,37 @@ Training prints held-out metrics and writes `app/ml/artifacts/model.joblib` plus
 The `--extra` score is the one to trust: it comes from a news source the models never saw.
 If it is far below the in-source score, the models learned the source, not fake news.
 
-### Measured results (first real training run)
-Trained on LIAR train and validation. Threshold chosen on validation data only.
+### Mixed-source training
+Five sources are pooled: LIAR (political claims), ISOT (wire-style articles), PolitiFact and GossipCop
+headlines from FakeNewsNet, and CoAID (COVID-19 news articles only).
 
-| Test set | Accuracy | Balanced accuracy | ROC AUC |
+```bash
+python -m app.ml.train --data liar:data/liar isot:data/isot politifact:data/fakenewsnet \
+    gossipcop:data/fakenewsnet coaid:data/coaid
+```
+To stop the models learning shortcuts, each source is balanced to equal fake and real rows and capped
+at 6,000 rows (otherwise GossipCop's 76% real share would make "celebrity gossip" mean "real"). Curly
+quotes, mojibake, trailing outlet names like "- Variety", links and "(Reuters)" are stripped, because
+each of these gave away the source in the raw data. Duplicates are removed across sources.
+CoAID fake social-media posts are skipped: they are claims, while its real rows are headlines.
+
+### Measured results (mixed sources, 19,262 training rows)
+"Leave one source out" trains on the other four sources and tests on the one left out. That is the
+honest measure of how the models treat an outlet they have never seen.
+
+| Source | Same-mix test AUC | Leave-one-source-out AUC | Leave-one-source-out balanced accuracy |
 |---|---|---|---|
-| LIAR, held-out split (same source) | 62% | 62% | 0.67 |
-| LIAR, official test file | 64% | 64% | 0.68 |
-| ISOT (different source, never trained on) | 52% | 54% | 0.59 |
+| LIAR | 0.65 | 0.51 | 51% |
+| ISOT | 0.99 | 0.60 | 57% |
+| PolitiFact (FakeNewsNet) | 0.84 | 0.71 | 64% |
+| GossipCop (FakeNewsNet) | 0.86 | 0.51 | 51% |
+| CoAID articles | 0.86 | 0.61 | 57% |
 
-Reading this honestly: on political claims the models are modestly better than a coin flip, and on
-a different source they are close to useless. The app therefore caps the classifier's influence at
-4 points when its outside-source AUC is below 0.65. Style models are a weak hint, and the fact-check,
-blocklist and corroboration checks matter far more. Datasets are licensed for research use, so
-`data/` is git-ignored. Re-download them rather than committing them.
+Reading this honestly: pooled same-mix accuracy looks good (78%), but that is mostly the models
+recognising the style of sources they trained on. Facing a new outlet they are near chance, apart
+from PolitiFact-style headlines (AUC 0.71). More sources did not fix generalisation. The app uses the
+median leave-one-source-out AUC (0.60, below the 0.65 bar) to cap the classifier at 4 points.
+Datasets are licensed for research use, so `data/` is git-ignored: re-download rather than commit.
 
 Notes:
 - The loaders strip source giveaways such as "(Reuters)" and links, which otherwise let a model cheat.

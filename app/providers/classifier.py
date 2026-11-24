@@ -1,6 +1,7 @@
 """Turns the trained models' output into evidence. Deliberately weak: a model that reads
 writing style cannot know whether a claim is true, so it can nudge but never decide."""
 import asyncio
+import statistics
 
 from ..ml import data, model
 from ..models import Evidence
@@ -18,14 +19,17 @@ async def check(client, text: str) -> list[Evidence]:  # client unused, kept for
     agree_fake = all(v >= t for v in per.values())
     agree_real = all(v < 1 - t for v in per.values())
     ens = r["card"]["metrics"]["test"]["ensemble"]
-    ext = r["card"]["metrics"].get("external") or {}
-    worst_auc = min((m.get("roc_auc", 0.5) for m in ext.values()), default=None)
+    mets = r["card"]["metrics"]
+    # Prefer leave-one-source-out scores (train without a source, test on it); fall back to extras.
+    outside = mets.get("loso") or mets.get("external") or {}
+    aucs = [m["roc_auc"] for m in outside.values() if "roc_auc" in m]
+    outside_auc = statistics.median(aucs) if aucs else None
     cap = MAX_WEIGHT
-    if worst_auc is None:
-        caveat = " It was never tested on a different news source, so treat it as rough."
+    if outside_auc is None:
+        caveat = " It was never tested on a news source it did not train on, so treat it as rough."
         cap = 8
-    elif worst_auc < WEAK_AUC:
-        caveat = (f" It scored poorly on a different news source (AUC {worst_auc:.2f}), "
+    elif outside_auc < WEAK_AUC:
+        caveat = (f" On sources it had never seen it scored poorly (median AUC {outside_auc:.2f}), "
                   "so its opinion is barely counted.")
         cap = 4
     else:

@@ -5,13 +5,17 @@
 Two different models vote, so one model's blind spot is less likely to decide the result:
   1. word 1-2 gram TF-IDF + logistic regression      (what words are used)
   2. char 3-5 gram TF-IDF + calibrated linear SVM    (how it is written: caps, punctuation)
-Metrics are measured on data the models never saw. --extra datasets are never trained
-on at all; they test whether the models generalise to a different source, which is the
-number you should trust most.
+Training sources are balanced fake/real inside each source and capped in size, so no single
+source dominates. Metrics are measured on data the models never saw:
+  test   held-out slice of the pooled sources (easy: same sources as training)
+  loso   leave-one-source-out: train on all other sources, test on the one left out.
+         This is the number to trust, because it measures generalisation to a new outlet.
+  extra  --extra datasets, never trained on.
 """
 import argparse
 import json
 import platform
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -66,49 +70,115 @@ def ensemble_proba(models: dict, X: list[str]) -> tuple[np.ndarray, dict[str, np
     return np.mean(list(per.values()), axis=0), per
 
 
-def train(datasets: list[str], extras: list[str], out_dir: Path, seed: int = 42,
-          use_body: bool = False) -> dict:
-    X, y = [], []
-    for spec in datasets:
+def load_sources(specs: list[str], use_body: bool) -> dict[str, tuple[list[str], list[int]]]:
+    """Load each source, cleaned, with duplicates removed across ALL sources."""
+    seen: set = set()
+    out = {}
+    for spec in specs:
         kw = {"use_body": use_body} if spec.startswith("isot:") else {}
-        xs, ys = data.load(spec, **kw)
+        X, y = data.dedupe(*data.load(spec, **kw), seen=seen)
+        if len(set(y)) < 2:
+            raise SystemExit(f"Source {spec} has only one class after cleaning.")
+        out[spec] = (X, y)
+    return out
+
+
+def balance(X: list[str], y: list[int], cap: int, rng: random.Random) -> tuple[list[str], list[int]]:
+    """Equal fake and real inside one source, at most cap rows in total.
+    Without this, a source's topic would predict its label (GossipCop is mostly real, so
+    'celebrity gossip' would mean 'real') and the model would learn topics, not fakery."""
+    idx = {0: [], 1: []}
+    for i, label in enumerate(y):
+        idx[label].append(i)
+    n = min(len(idx[0]), len(idx[1]), cap // 2)
+    pick = rng.sample(idx[0], n) + rng.sample(idx[1], n)
+    return [X[i] for i in pick], [y[i] for i in pick]
+
+
+def pool(sources: dict, names: list[str], cap: int, rng: random.Random):
+    X, y, keys = [], [], []
+    for name in names:
+        xs, ys = balance(*sources[name], cap, rng)
         X += xs
         y += ys
-    X, y = data.dedupe(X, y)
-    if len(set(y)) < 2 or min(np.bincount(y)) < 20:
-        raise SystemExit("Need at least 20 examples of each class to train.")
+        keys += [f"{name}|{label}" for label in ys]
+    return X, y, keys
 
-    X_tr, X_tmp, y_tr, y_tmp = train_test_split(X, y, test_size=0.3, stratify=y, random_state=seed)
-    X_va, X_te, y_va, y_te = train_test_split(X_tmp, y_tmp, test_size=0.5, stratify=y_tmp, random_state=seed)
 
+def pick_threshold(y_va, p_va) -> float:
+    # Balanced accuracy, not F1: F1 on the fake class rewards flagging everything as fake.
+    return float(max(np.linspace(0.3, 0.7, 41), key=lambda t: balanced_accuracy_score(y_va, p_va >= t)))
+
+
+def fit_all(X_tr, y_tr, seed):
     models = build_models(seed)
     for m in models.values():
         m.fit(X_tr, y_tr)
+    return models
 
-    # Pick the decision threshold on validation data only, then report on untouched test data.
-    p_va, _ = ensemble_proba(models, X_va)
-    thresholds = np.linspace(0.3, 0.7, 41)
-    # Balanced accuracy, not F1: F1 on the fake class rewards flagging everything as fake.
-    best_t = float(max(thresholds, key=lambda t: balanced_accuracy_score(y_va, p_va >= t)))
 
+def take(items: list, idx) -> list:
+    return [items[i] for i in idx]
+
+
+def train(datasets: list[str], extras: list[str], out_dir: Path, seed: int = 42,
+          use_body: bool = False, max_per_source: int = 6000, loso: bool = True) -> dict:
+    rng = random.Random(seed)
+    sources = load_sources(datasets, use_body)
+    names = list(sources)
+    X, y, keys = pool(sources, names, max_per_source, rng)
+    if len(set(y)) < 2 or min(np.bincount(y)) < 20:
+        raise SystemExit("Need at least 20 examples of each class to train.")
+
+    idx = list(range(len(X)))
+    i_tr, i_tmp = train_test_split(idx, test_size=0.3, stratify=keys, random_state=seed)
+    i_va, i_te = train_test_split(i_tmp, test_size=0.5, stratify=take(keys, i_tmp), random_state=seed)
+
+    models = fit_all(take(X, i_tr), take(y, i_tr), seed)
+    p_va, _ = ensemble_proba(models, take(X, i_va))
+    best_t = pick_threshold(take(y, i_va), p_va)
+
+    X_te, y_te = take(X, i_te), take(y, i_te)
     p_te, per_te = ensemble_proba(models, X_te)
     metrics = {"test": {"ensemble": evaluate(y_te, p_te, best_t),
                         **{k: evaluate(y_te, v, 0.5) for k, v in per_te.items()}}}
+    # Per-source breakdown of the same held-out split.
+    by_src = {}
+    for name in names:
+        sel = [j for j, i in enumerate(i_te) if keys[i].startswith(name + "|")]
+        if len(set(y_te[j] for j in sel)) == 2:
+            by_src[name] = evaluate([y_te[j] for j in sel], p_te[sel], best_t)
+    metrics["test_by_source"] = by_src
 
-    for spec in extras:  # out-of-source check, never trained on
+    if loso and len(names) >= 2:
+        # Train on every source except one, test on the one left out. This is the number to trust.
+        metrics["loso"] = {}
+        for held in names:
+            others = [n for n in names if n != held]
+            Xo, yo, ko = pool(sources, others, max_per_source, rng)
+            j_tr, j_va = train_test_split(list(range(len(Xo))), test_size=0.15, stratify=ko,
+                                          random_state=seed)
+            m = fit_all(take(Xo, j_tr), take(yo, j_tr), seed)
+            pv, _ = ensemble_proba(m, take(Xo, j_va))
+            t = pick_threshold(take(yo, j_va), pv)
+            xh, yh = sources[held]
+            ph, _ = ensemble_proba(m, xh)
+            metrics["loso"][held] = evaluate(yh, ph, t)
+
+    for spec in extras:  # additional sources that are never trained on
         kw = {"use_body": use_body} if spec.startswith("isot:") else {}
         xe, ye = data.dedupe(*data.load(spec, **kw))
         pe, _ = ensemble_proba(models, xe)
         metrics.setdefault("external", {})[spec] = evaluate(ye, pe, best_t)
 
-    # Final models use all non-external data so no labelled example is wasted.
-    models = build_models(seed)
-    for m in models.values():
-        m.fit(X, y)
-
+    models = fit_all(X, y, seed)  # final models use every pooled example
     card = {
         "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "datasets": datasets, "external_datasets": extras, "use_body": use_body,
+        "max_per_source": max_per_source,
+        "sources": {n: {"rows_after_cleaning": len(sources[n][1]),
+                        "fake_share": round(sum(sources[n][1]) / len(sources[n][1]), 3),
+                        "rows_used": sum(1 for k in keys if k.startswith(n + "|"))} for n in names},
         "n_train_total": len(X), "threshold": round(best_t, 3), "metrics": metrics,
         "sklearn": sklearn.__version__, "python": platform.python_version(),
         "note": "Writing-style classifier. It cannot check facts.",
@@ -126,8 +196,11 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=ARTIFACT_DIR)
     ap.add_argument("--use-body", action="store_true", help="ISOT only: include article body, not just title")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--max-per-source", type=int, default=6000,
+                    help="cap rows per source (split evenly fake/real) so big sources do not dominate")
+    ap.add_argument("--no-loso", action="store_true", help="skip leave-one-source-out evaluation")
     a = ap.parse_args()
-    card = train(a.data, a.extra, a.out, a.seed, a.use_body)
+    card = train(a.data, a.extra, a.out, a.seed, a.use_body, a.max_per_source, not a.no_loso)
     print(json.dumps(card["metrics"], indent=2))
     print(f"Saved to {a.out}")
 

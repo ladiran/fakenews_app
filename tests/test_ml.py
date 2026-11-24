@@ -106,3 +106,83 @@ def test_too_few_examples_refuses(tmp_path):
     write_csv(tmp_path / "s.csv", [f"example text number {i} long" for i in range(10)], [i % 2 for i in range(10)])
     with pytest.raises(SystemExit):
         train.train([f"csv:{tmp_path/'s.csv'}"], [], tmp_path / "o")
+
+
+# ---- mixed-source additions
+import random as _random
+
+
+def test_clean_text_folds_quotes_mojibake_and_suffix():
+    assert data.clean_text("New Year’s Eve message goes viral online") == "New Year's Eve message goes viral online"
+    assert data.clean_text("Wisconsin is Òclearly seeing a declineÓ now") == 'Wisconsin is "clearly seeing a decline" now'
+    assert data.clean_text("Full List of 2018 Oscar Nominations – Variety") == "Full List of 2018 Oscar Nominations"
+    assert data.clean_text("Trump - Biden") == "Trump - Biden"  # short remainder is kept, not stripped
+
+def test_balance_equalises_classes_and_caps():
+    X = [f"t{i}" for i in range(100)]
+    y = [1] * 90 + [0] * 10
+    bx, by = train.balance(X, y, cap=1000, rng=_random.Random(0))
+    assert sum(by) == 10 and len(by) == 20
+    bx, by = train.balance(X, y, cap=6, rng=_random.Random(0))
+    assert len(by) == 6 and sum(by) == 3
+
+def test_fakenewsnet_loader(tmp_path):
+    for kind, title in (("fake", "A made up story about cats"), ("real", "A true report about dogs")):
+        with open(tmp_path / f"gossipcop_{kind}.csv", "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["id", "news_url", "title", "tweet_ids"])
+            w.writeheader(); w.writerow({"id": "1", "news_url": "x", "title": title, "tweet_ids": "1\t2" * 50000})
+    X, y = data.load(f"gossipcop:{tmp_path}")
+    assert sorted(y) == [0, 1] and len(X) == 2  # huge tweet_ids field must not break csv
+
+def test_coaid_loader_uses_articles_only(tmp_path):
+    d = tmp_path / "05-01-2020"; d.mkdir()
+    for kind, rows in (("Fake", [("article", "Fake article headline here"), ("post", "Facebook claim post text")]),
+                       ("Real", [("article", "Real article headline here")])):
+        with open(d / f"News{kind}COVID-19.csv", "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["", "type", "title"]); w.writeheader()
+            for t, title in rows:
+                w.writerow({"": "0", "type": t, "title": title})
+    X, y = data.load_coaid(tmp_path)
+    assert sorted(y) == [0, 1] and not any("claim post" in t for t in X)
+
+def test_dedupe_across_sources():
+    seen = set()
+    a = data.dedupe(["Same headline in two sources"], [1], seen=seen)
+    b = data.dedupe(["same headline in two sources", "A different headline entirely"], [0, 0], seen=seen)
+    assert len(a[0]) == 1 and b[0] == ["A different headline entirely"]
+
+@pytest.fixture
+def mixed(tmp_path, monkeypatch):
+    """Three toy sources with different styles so leave-one-source-out has something to do."""
+    r = _random.Random(3)
+    specs = []
+    for k, (fa, ra) in enumerate([(_FAKE_A, _REAL_A), (["WOW", "Insane", "Crazy"], ["Mayor", "Senate", "Court"]),
+                                  (["Hoax", "Lies", "Scandal"], ["Study", "Report", "Survey"])]):
+        X, y = [], []
+        for i in range(120):
+            X.append(f"{r.choice(fa)}!! {r.choice(_FAKE_B)} variant {k}-{i}"); y.append(1)
+            X.append(f"{r.choice(ra)} {r.choice(_REAL_B)} variant {k}-{i}"); y.append(0)
+        write_csv(tmp_path / f"s{k}.csv", X, y)
+        specs.append(f"csv:{tmp_path / f's{k}.csv'}")
+    out = tmp_path / "art"
+    card = train.train(specs, [], out, max_per_source=100)
+    monkeypatch.setenv("FAKENEWS_MODEL_PATH", str(out / "model.joblib"))
+    model._load.cache_clear()
+    yield card, specs
+    model._load.cache_clear()
+
+def test_mixed_training_balances_and_runs_loso(mixed):
+    card, specs = mixed
+    assert set(card["metrics"]["loso"]) == set(specs)
+    assert all(v["rows_used"] <= 100 for v in card["sources"].values())  # cap respected
+    assert set(card["metrics"]["test_by_source"]) <= set(specs)
+    assert all("roc_auc" in v for v in card["metrics"]["loso"].values())
+
+@pytest.mark.asyncio
+async def test_classifier_weight_gated_by_loso_auc(mixed):
+    card, _ = mixed
+    out = await classifier.check(None, "SHOCKING!! Banned trick melts fat number 9")
+    if out[0].direction == "fake":
+        med = sorted(v["roc_auc"] for v in card["metrics"]["loso"].values())[1]
+        assert out[0].weight <= (classifier.MAX_WEIGHT if med >= classifier.WEAK_AUC else 4)
+    assert not any(e.decisive for e in out)
