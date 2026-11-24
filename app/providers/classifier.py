@@ -29,13 +29,15 @@ async def check(client, text: str) -> list[Evidence]:  # client unused, kept for
         caveat = " It was never tested on a news source it did not train on, so treat it as rough."
         cap = 8
     elif outside_auc < WEAK_AUC:
-        caveat = (f" On sources it had never seen it scored poorly (median AUC {outside_auc:.2f}), "
-                  "so its opinion is barely counted.")
+        caveat = " That is weak, so its opinion is barely counted."
         cap = 4
     else:
         caveat = ""
+    # Quote the outside-source score when we have it; the same-mix accuracy flatters the model.
+    quality = (f"median AUC {outside_auc:.2f} on unseen sources" if outside_auc is not None
+               else f"accuracy {ens['balanced_accuracy']:.0%} on its own training mix")
     detail = (f"Writing-style models estimate a {p:.0%} chance this reads like known fake news "
-              f"(held-out accuracy {ens['balanced_accuracy']:.0%}).{caveat} It judges wording, not facts.")
+              f"({quality}).{caveat} It judges wording, not facts.")
     if agree_fake:
         return [Evidence(source="classifier", signal="style_fake", direction="fake",
                          weight=cap if p >= 0.8 else cap // 2, detail=detail)]
