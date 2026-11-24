@@ -36,6 +36,36 @@ python -m uvicorn app.main:app --reload
 ```
 Open http://localhost:8000. Run the tests with `python -m pytest`.
 
+## Trained text classifiers
+Two models read the headline and vote. Their opinion is a weak nudge (max 15 points) and can never
+decide a verdict alone, because a model that reads writing style cannot know whether a claim is true.
+
+| Model | Looks at |
+|---|---|
+| Word TF-IDF + logistic regression | Which words and word pairs appear |
+| Character TF-IDF + calibrated linear SVM | How it is written: capitals, punctuation, word shapes |
+
+**No trained model ships with the repo.** You need real labelled data, which I could not
+download from the build sandbox. Get a dataset and train:
+
+```bash
+# Short claims, closest to headlines (recommended as the main training set):
+#   LIAR (Wang, 2017) https://doi.org/10.18653/v1/P17-2067
+# Full articles from a different source, used ONLY to test generalisation:
+#   ISOT (Ahmed, Traore and Saad, 2017) https://doi.org/10.1007/978-3-319-69155-8_9
+python -m app.ml.train --data liar:data/liar/train.tsv --extra isot:data/isot
+```
+Training prints held-out metrics and writes `app/ml/artifacts/model.joblib` plus `model_card.json`.
+The `--extra` score is the one to trust: it comes from a news source the models never saw.
+If it is far below the in-source score, the models learned the source, not fake news.
+
+Notes:
+- The loaders strip source giveaways such as "(Reuters)" and links, which otherwise let a model cheat.
+- `half-true` LIAR rows are dropped; `pants-fire`, `false` and `barely-true` count as fake.
+- The model file is a pickle. Load only files you trained yourself. A scikit-learn version mismatch
+  disables the model with a message instead of crashing.
+- Without a model the app runs as before and lists the classifier under "Not checked".
+
 ## Customising
 Edit `app/data/sources.json` to change the trusted, satire and unreliable domain lists.
 

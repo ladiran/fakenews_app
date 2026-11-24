@@ -5,7 +5,7 @@ import httpx
 
 from . import heuristics, netsafe, verdict
 from .models import CheckRequest, CheckResponse, Evidence
-from .providers import domain, factcheck, gdelt, safebrowsing, social
+from .providers import classifier, domain, factcheck, gdelt, safebrowsing, social
 
 
 async def _run(name: str, coro, evidence: list[Evidence], skipped: list[str]) -> None:
@@ -47,6 +47,7 @@ async def analyze(req: CheckRequest, client: httpx.AsyncClient) -> CheckResponse
     if title:
         tasks.append(_run("factcheck", factcheck.check(client, title), evidence, skipped))
         tasks.append(_run("gdelt", gdelt.check(client, title), evidence, skipped))
+        tasks.append(_run("classifier", classifier.check(client, title), evidence, skipped))
     if url and reachable:
         tasks.append(_run("safebrowsing", safebrowsing.check(client, url), evidence, skipped))
         tasks.append(_run("rdap", domain.domain_age(client, host), evidence, skipped))
