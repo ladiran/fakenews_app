@@ -1,0 +1,19 @@
+{
+  "_note": "Editable seed lists. Add or remove domains as you see fit. Keep entries lowercase, without www.",
+  "trusted": [
+    "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk", "npr.org", "pbs.org",
+    "nature.com", "science.org", "who.int", "cdc.gov", "nih.gov", "nasa.gov",
+    "theguardian.com", "nytimes.com", "washingtonpost.com", "aljazeera.com",
+    "dw.com", "france24.com", "abc.net.au", "cbc.ca"
+  ],
+  "satire": [
+    "theonion.com", "clickhole.com", "babylonbee.com", "waterfordwhispersnews.com",
+    "thedailymash.co.uk", "newsthump.com", "thebeaverton.com"
+  ],
+  "known_unreliable": [],
+  "fact_checkers": [
+    "snopes.com", "politifact.com", "factcheck.org", "fullfact.org",
+    "apnews.com", "reuters.com", "afp.com", "leadstories.com", "africacheck.org"
+  ],
+  "suspicious_tlds": ["zip", "mov", "top", "xyz", "click", "country", "gq", "tk", "ml", "cf"]
+}
