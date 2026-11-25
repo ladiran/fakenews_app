@@ -30,6 +30,12 @@ async def check(req: CheckRequest) -> CheckResponse:
     return await analyze(req, app.state.client)
 
 
+@app.get("/api/health")
+async def health() -> dict:
+    """Used by the host website to show whether the checker is online."""
+    return {"status": "ok", "version": app.version}
+
+
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(STATIC / "index.html")

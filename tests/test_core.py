@@ -133,3 +133,10 @@ def test_unresolvable_lookalike_still_flagged(monkeypatch):
     with TestClient(app) as tc:
         r = tc.post("/api/check", json={"url": "http://bbc-news-today.invalid/x"})
     assert "lookalike_domain" in {e["signal"] for e in r.json()["evidence"]}
+
+
+def test_health_endpoint():
+    from app.main import app
+    with TestClient(app) as tc:
+        r = tc.get("/api/health")
+    assert r.status_code == 200 and r.json()["status"] == "ok"
